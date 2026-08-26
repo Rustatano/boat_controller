@@ -13,11 +13,11 @@ void main() async {
   // Hide status bar
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersive);
 
-  runApp(const MyApp());
+  runApp(const BoatControllerApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class BoatControllerApp extends StatelessWidget {
+  const BoatControllerApp({super.key});
 
   @override
   Widget build(BuildContext context) {
