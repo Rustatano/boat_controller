@@ -1,6 +1,8 @@
-import 'package:boat_controller/sail_parameters.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_mjpeg/flutter_mjpeg.dart';
+
+import 'package:boat_controller/boat_data.dart';
+import 'package:boat_controller/telemetry_data.dart';
 
 class ControlPage extends StatefulWidget {
   const ControlPage({super.key, required this.title});
@@ -12,10 +14,10 @@ class ControlPage extends StatefulWidget {
 }
 
 class _ControlPageState extends State<ControlPage> {
-  double _currentThrottle = 0; // from 0 to 100 %
-  double _currentTurn = 0; // grom -45 to 45 °
+  double _currentThrottle = 0; // -100 - 100 percent
+  double _currentTurn = 0; // -45 - 45 degrees
 
-  SailParameters sailParameters = SailParameters(DateTime.now());
+  TelemetryData telemetryData = TelemetryData();
 
   @override
   Widget build(BuildContext context) {
@@ -87,7 +89,7 @@ class _ControlPageState extends State<ControlPage> {
                 Column(
                   children: [
                     Text(
-                      sailParameters.toString(),
+                      telemetryData.toString(),
                       style: TextStyle(color: Colors.black),
                     ),
                   ],
