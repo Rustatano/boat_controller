@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_mjpeg/flutter_mjpeg.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'package:boat_controller/boat_data.dart';
 import 'package:boat_controller/telemetry_data.dart';
@@ -16,8 +19,65 @@ class ControlPage extends StatefulWidget {
 class _ControlPageState extends State<ControlPage> {
   double _currentThrottle = 0; // -100 - 100 percent
   double _currentTurn = 0; // -45 - 45 degrees
+  WebSocketChannel? _wsChannel;
+  TelemetryData? _latestTelemetry;
 
-  TelemetryData telemetryData = TelemetryData();
+  TelemetryData telemetryData = TelemetryData(
+    speed: 0,
+    temperature: 0,
+    waterLeak: false,
+  );
+
+  void connect(Function(TelemetryData) onTelemetryReceived) {
+    _wsChannel = WebSocketChannel.connect(Uri.parse('ws://192.168.4.1/ws'));
+
+    // listening to messages from esp
+    _wsChannel!.stream.listen(
+      (msg) {
+        try {
+          final Map<String, dynamic> data = jsonDecode(msg);
+
+          final telemetry = TelemetryData.fromJson(data);
+          // send data to UI
+          onTelemetryReceived(telemetry);
+        } catch (err) {
+          print('ERR: $err');
+        }
+      },
+      onError: (err) => print('ERR: $err'),
+      onDone: () => print('LOG: websocket connection ended'),
+    );
+  }
+
+  void sendMotorControl(int throttle, int rudderAngle) {
+    if (_wsChannel != null) {
+      // create map
+      Map<String, dynamic> payload = {
+        'throttle': throttle,
+        'rudder_angle': rudderAngle,
+      };
+
+      // convert map to json
+      String jsonString = jsonEncode(payload);
+
+      // sending over websocket
+      _wsChannel!.sink.add(jsonString);
+    }
+  }
+
+  void disconnect() {
+    _wsChannel?.sink.close();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    connect((telemetry) {
+      setState(() {
+        _latestTelemetry = telemetry;
+      });
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -65,6 +125,7 @@ class _ControlPageState extends State<ControlPage> {
                             year2023: false,
                             value: _currentThrottle,
                             max: 100,
+                            min: -100,
                             onChanged: (double value) {
                               setState(() {
                                 _currentThrottle = value;
@@ -88,10 +149,12 @@ class _ControlPageState extends State<ControlPage> {
                 // parameters display (sensors, time, ...)
                 Column(
                   children: [
-                    Text(
-                      telemetryData.toString(),
-                      style: TextStyle(color: Colors.black),
-                    ),
+                    if (_latestTelemetry != null) ...[
+                      Text(
+                        telemetryData.toString(),
+                        style: TextStyle(color: Colors.black),
+                      ),
+                    ],
                   ],
                 ),
                 // central view
