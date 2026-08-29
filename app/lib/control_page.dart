@@ -17,7 +17,7 @@ class ControlPage extends StatefulWidget {
 
 class _ControlPageState extends State<ControlPage> {
   double _currentThrottle = 0; // -100 - 100 percent
-  double _currentRudderAngle = 0; // 0 - 180 degrees
+  double _currentRudderAngle = 90; // 0 - 180 degrees
   WebSocketChannel? _wsChannel;
   TelemetryData? _latestTelemetry;
 
@@ -87,7 +87,7 @@ class _ControlPageState extends State<ControlPage> {
         child: Stack(
           children: [
             // on-board camera stream
-            /*Positioned.fill(
+            Positioned.fill(
               child: Mjpeg(
                 isLive: true,
                 error: (context, error, stack) {
@@ -98,7 +98,7 @@ class _ControlPageState extends State<ControlPage> {
                 },
                 stream: 'http://192.168.4.1/stream',
               ),
-            ),*/
+            ),
             Row(
               mainAxisAlignment: .center,
               children: [
@@ -129,11 +129,11 @@ class _ControlPageState extends State<ControlPage> {
                               setState(() {
                                 _currentThrottle = value;
                               });
+                              sendBoatControl(
+                                _currentThrottle.round(),
+                                _currentRudderAngle.round(),
+                              );
                             },
-                            onChangeEnd: (value) => sendBoatControl(
-                              _currentThrottle.round(),
-                              _currentRudderAngle.round(),
-                            ),
                           ),
                         ),
                       ),
@@ -189,16 +189,10 @@ class _ControlPageState extends State<ControlPage> {
                               setState(() {
                                 _currentRudderAngle = value;
                               });
-                            },
-                            onChangeEnd: (value) {
                               sendBoatControl(
                                 _currentThrottle.round(),
                                 _currentRudderAngle.round(),
                               );
-                              // snap to zero when tap ended
-                              setState(() {
-                                _currentRudderAngle = 90;
-                              });
                             },
                           ),
                         ),
@@ -207,7 +201,7 @@ class _ControlPageState extends State<ControlPage> {
                       IconButton(
                         onPressed: () {
                           setState(() {
-                            _currentRudderAngle = 0;
+                            _currentRudderAngle = 90;
                           });
                         },
                         icon: Icon(Icons.replay),

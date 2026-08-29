@@ -1,10 +1,9 @@
-#include <HardwareSerial.h>
-#include <WiFi.h>
 #include <ArduinoJson.h>
+#include <ESPAsyncWebServer.h>
+#include <HardwareSerial.h>
 
 #include "../../lib/packet.h"
 #include "esp_camera.h"
-#include "esp_http_server.h"
 
 // pinout
 #define TX_GPIO 12
@@ -28,17 +27,16 @@
 #define PCLK_GPIO 22
 
 // Wi-Fi credentials
-const char* ssid = "BoatControlller";
+const char* ssid = "BoatController";
 const char* password = "NoExplosionPlease";
 
-httpd_handle_t stream_httpd = NULL;
-httpd_handle_t server_handle = NULL;
-int last_client_fd = -1;
+// create server and websocket
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
 
-// UART 1, UART 0 is for serial monitor
 HardwareSerial Uart1(1);
 
-// send data over uart communication
+// send control data over uart to control esp
 void sendControlPacket(int8_t throttle, uint8_t rudder_angle) {
     ControlPacket packet;
     packet.throttle = throttle;
@@ -46,162 +44,113 @@ void sendControlPacket(int8_t throttle, uint8_t rudder_angle) {
     packet.checksum = packet.header ^ (uint8_t)packet.throttle ^ packet.rudder_angle;
 
     Uart1.write((uint8_t*)&packet, sizeof(packet));
-    Serial.println("sent something");
+    Serial.println("sent something over UART");
 }
 
-// send data over Wi-Fi to controller
+// send telemetry data over Wi-Fi to client app
 void sendTelemetryData(int8_t speed, int8_t temperature, uint8_t water_leak) {
-    if (server_handle == NULL || last_client_fd < 0) return;
+    if (ws.count() == 0) {
+        // no clients connected
+        return;
+    }
 
-    // json preparaion
     JsonDocument doc;
     doc["speed"] = speed;
     doc["temp"] = temperature;
     doc["leak"] = water_leak;
 
-    // serialize json
     String jsonString;
     serializeJson(doc, jsonString);
 
-    // ws frame preparation
-    httpd_ws_frame_t ws_packet;
-    memset(&ws_packet, 0, sizeof(httpd_ws_frame_t));
-    ws_packet.payload = (uint8_t*)jsonString.c_str();
-    ws_packet.len = jsonString.length();
-    ws_packet.type = HTTPD_WS_TYPE_TEXT;
-
-    // async send to controller
-    httpd_ws_send_frame_async(server_handle, last_client_fd, &ws_packet);
+    // send data through websocket
+    ws.textAll(jsonString);
 }
 
-// websocket handler
-esp_err_t ws_handler(httpd_req_t *req) {
-    // handshake
-    Serial.println("handshake");
-    if (req->method == HTTP_GET) {
-        last_client_fd = httpd_req_to_sockfd(req);
-        return ESP_OK;
-    }
-    
-    httpd_ws_frame_t ws_packet;
-    memset(&ws_packet, 0, sizeof(httpd_ws_frame_t));
-    
-    Serial.println("len data");
-    // get length of incoming frame
-    esp_err_t ret = httpd_ws_recv_frame(req, &ws_packet, 0);
-    if (ret != ESP_OK || ws_packet.len == 0) {
-        return ret;
-    }
+// incoming websocket messages handler
+void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType type, void* arg, uint8_t* data, size_t len) {
+    if (type == WS_EVT_CONNECT) {
+        Serial.printf("websocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+    } else if (type == WS_EVT_DISCONNECT) {
+        Serial.printf("websocket client #%u disconnected\n", client->id());
+    } else if (type == WS_EVT_DATA) {
+        AwsFrameInfo* info = (AwsFrameInfo*)arg;
+        if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+            // string ending
+            data[len] = '\0';
 
-    Serial.println("alloc data");
-    // allocate space for text data + '\n'
-    char *buf = (char*) malloc(ws_packet.len + 1);
-    if (buf == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
+            JsonDocument doc;
+            DeserializationError error = deserializeJson(doc, (char*)data);
 
-    ws_packet.payload = (uint8_t*) buf;
-    
-    // load data from frame
-    ret = httpd_ws_recv_frame(req, &ws_packet, ws_packet.len);
-    Serial.println("load data");
-    if (ret == ESP_OK) {
-        // string ending
-        buf[ws_packet.len] = '\0';
+            if (!error) {
+                int8_t throttle = doc["throttle"];
+                uint8_t rudder_angle = doc["rudder_angle"];
 
-        // deserialize into json
-        JsonDocument doc;
-        DeserializationError error = deserializeJson(doc, buf);
-
-        if (!error) {
-            int8_t throttle = doc["throttle"];
-            uint8_t rudder_angle = doc["rudder_angle"];
-
-            // send control data over uart
-            sendControlPacket(throttle, rudder_angle);
+                sendControlPacket(throttle, rudder_angle);
+            }
         }
     }
-
-    free(buf);
-
-    return ret;
 }
 
-// mjpeg stream handler
-esp_err_t stream_handler(httpd_req_t* req) {
-    camera_fb_t* frame_buf = NULL;
-    char part_buf[128];
-    // image boundary separator
-    esp_err_t res = httpd_resp_set_type(req, "multipart/x-mixed-replace; boundary=123456789000000000000987654321");
+// video stream handler
+void handleMjpegStream(AsyncWebServerRequest *request) {
+    AsyncWebServerResponse *response = request->beginResponse("multipart/x-mixed-replace; boundary=frame", 0, 
+        [](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+            static camera_fb_t * fb = NULL;
+            static size_t frameIndex = 0;
 
-    if (res != ESP_OK) {
-        return res;
-    }
+            if (!fb) {
+                fb = esp_camera_fb_get();
+                if (!fb) {
+                    return 0;
+                }
+                frameIndex = 0;
+            }
 
-    // http header config
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, private, max-age=0, must-revalidate");
-    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+            char header[128];
+            int hlen = snprintf(header, sizeof(header), "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", fb->len);
+            size_t totalFrameLen = hlen + fb->len + 2;
 
-    while (true) {
-        // get frame buffer
-        frame_buf = esp_camera_fb_get();
-        if (!frame_buf) {
-            Serial.println("ERR: Failed to capture a frame");
-            res = ESP_FAIL;
-            break;
+            size_t bytesWritten = 0;
+
+            while (bytesWritten < maxLen && frameIndex < totalFrameLen) {
+                if (frameIndex < (size_t)hlen) {
+                    // send HTTP header
+                    buffer[bytesWritten++] = header[frameIndex++];
+                } 
+                else if (frameIndex < hlen + fb->len) {
+                    // send jpeg image data
+                    buffer[bytesWritten++] = fb->buf[frameIndex - hlen];
+                    frameIndex++;
+                } 
+                else {
+                    // send ending \r\n
+                    buffer[bytesWritten++] = (frameIndex == hlen + fb->len) ? '\r' : '\n';
+                    frameIndex++;
+                }
+            }
+
+            // Pokud jsme poslali celý snímek, uvolníme ho a připravíme se na další
+            if (frameIndex >= totalFrameLen) {
+                esp_camera_fb_return(fb);
+                fb = NULL;
+                frameIndex = 0;
+            }
+
+            return bytesWritten;
         }
+    );
 
-        // text image-descriptor preparation
-        size_t hlen = snprintf(part_buf, 128,
-                               "\r\n--123456789000000000000987654321\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n",
-                               frame_buf->len);
-
-        // send image text-description
-        res = httpd_resp_send_chunk(req, part_buf, hlen);
-
-        // send image data
-        if (res == ESP_OK) {
-            res = httpd_resp_send_chunk(req, (const char*)frame_buf->buf, frame_buf->len);
-        }
-
-        // free frame buffer for next frame
-        esp_camera_fb_return(frame_buf);
-        frame_buf = NULL;
-
-        if (res != ESP_OK) {
-            break;
-        }
-
-        // safety delay
-        vTaskDelay(10 / portTICK_PERIOD_MS);
-    }
-
-    return res;
-}
-
-// http server init
-void startCameraServer() {
-    // http server config and port
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.server_port = 80;
-
-    // page path handlers
-    httpd_uri_t stream_uri = {.uri = "/stream", .method = HTTP_GET, .handler = stream_handler, .user_ctx = NULL};
-    httpd_uri_t ws_uri = {.uri = "/ws", .method = HTTP_GET, .handler = ws_handler, .user_ctx = NULL, .is_websocket = true};
-
-    if (httpd_start(&stream_httpd, &config) == ESP_OK) {
-        httpd_register_uri_handler(stream_httpd, &stream_uri);
-        httpd_register_uri_handler(stream_httpd, &ws_uri);
-        Serial.println("LOG: HTTP server started");
-    }
+    response->addHeader("Access-Control-Allow-Origin", "*");
+    response->addHeader("Cache-Control", "no-cache, private");
+    response->addHeader("Pragma", "no-cache");
+    request->send(response);
 }
 
 void setup() {
     Serial.begin(115200);
     Uart1.begin(115200, SERIAL_8N1, RX_GPIO, TX_GPIO);
 
-    // pin assignment
+    // camera config
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
@@ -221,61 +170,51 @@ void setup() {
     config.pin_sccb_scl = SIOC_GPIO;
     config.pin_pwdn = PWDN_GPIO;
     config.pin_reset = RESET_GPIO;
-
-    // 10 MHz for stability
     config.xclk_freq_hz = 10000000;
     config.pixel_format = PIXFORMAT_JPEG;
 
     if (psramFound()) {
-        // 640x480
         config.frame_size = FRAMESIZE_VGA;
         config.jpeg_quality = 12;
         config.fb_count = 2;
     } else {
-        // 320x240
         config.frame_size = FRAMESIZE_QVGA;
         config.jpeg_quality = 12;
         config.fb_count = 1;
     }
 
-    // initializing camera
-    esp_err_t err = esp_camera_init(&config);
-    if (err != ESP_OK) {
-        Serial.printf("ERR: camera error: 0x%x\n", err);
+    if (esp_camera_init(&config) != ESP_OK) {
+        Serial.println("ERR: camera initialization failed");
         return;
     }
 
-    // first frame cleaning
-    camera_fb_t* frame_buf = esp_camera_fb_get();
-    if (frame_buf) {
-        esp_camera_fb_return(frame_buf);
-    }
-
-    // initializing Wi-Fi
     WiFi.softAP(ssid, password);
 
-    // initializing http server
-    startCameraServer();
+    // registration of websocket
+    ws.onEvent(onWsEvent);
+    server.addHandler(&ws);
 
-    Serial.print("Stream accesible at Wi-Fi 'BoatController': http://");
-    Serial.println(WiFi.softAPIP());
+    // registration of HTTP stream
+    server.on("/stream", HTTP_GET, handleMjpegStream);
+
+    server.begin();
+    Serial.println("LOG: async server and websocket running");
 }
 
 void loop() {
-    // read data from uart communication
+    // resotring websocket state
+    ws.cleanupClients();
+
+    // read telemetry data from uart communication from control esp
     while (Uart1.available() >= sizeof(TelemetryPacket)) {
-        // check for correct header
         if (Uart1.peek() == 0xBB) {
             TelemetryPacket packet;
             Uart1.readBytes((uint8_t*)&packet, sizeof(packet));
 
-            // compare checksums
             if ((packet.header ^ packet.speed ^ packet.temperature ^ packet.water_leak) == packet.checksum) {
-                // correct data => able to send it to controller
                 sendTelemetryData(packet.speed, packet.temperature, packet.water_leak);
             }
         } else {
-            // incorrect data => try to move by one byte for synchronization
             Uart1.read();
         }
     }
