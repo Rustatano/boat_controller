@@ -10,12 +10,6 @@
 #define MOTOR_FORWARD_GPIO 26
 #define SERVO_GPIO 27
 
-// constants
-// 1 kHz
-#define PWM_fREQUENCY 1000
-// 8 bits => 0 - 255 possible values
-#define PWM_RESOLUTION 8
-
 // UART 1, UART 0 is for serial monitor
 HardwareSerial Uart1(1);
 Servo rudderServo;
@@ -27,6 +21,7 @@ void setRudderAngle(uint8_t angle) {
 
 // write PWM signal and direction to motor
 void setThrottle(uint8_t throttle) {
+    Serial.println(throttle);
     if (throttle >= 0) {
         analogWrite(MOTOR_FORWARD_GPIO, throttle);
         analogWrite(MOTOR_BACKWARD_GPIO, 0);
@@ -57,21 +52,22 @@ void setup() {
 
 void loop() {
     // read data from uart communication
-    while (Serial.available() >= sizeof(ControlPacket)) {
+    while (Uart1.available() >= sizeof(ControlPacket)) {
+        Serial.println("received something");
         // check for correct header
-        if (Serial.peek() == 0xBB) {
+        if (Uart1.peek() == 0xBB) {
             ControlPacket packet;
-            Serial.readBytes((uint8_t*)&packet, sizeof(packet));
+            Uart1.readBytes((uint8_t*)&packet, sizeof(packet));
 
             // compare checksums
-            if (packet.header ^ packet.throttle ^ packet.rudder_angle == packet.checksum) {
+            if ((packet.header ^ packet.throttle ^ packet.rudder_angle) == packet.checksum) {
                 // correct data => able to apply values
                 setRudderAngle(packet.rudder_angle);
                 setThrottle(packet.throttle);
             }
         } else {
             // incorrect data => try to move by one byte for synchronization
-            Serial.read();
+            Uart1.read();
         }
     }
 }

@@ -10,12 +10,7 @@ class TelemetryData {
     return TelemetryData(
       speed: (json['speed'] as num).toInt(),
       temperature: (json['temp'] as num).toInt(),
-      waterLeak: json['leak'] as bool,
+      waterLeak: json['leak'] == 1 || json['leak'] == true,
     );
-  }
-
-  @override
-  String toString() {
-    return 'Speed:\t${this.speed} m/s\nTemperature:\t${this.temperature} °C\nWater leak:\t${this.waterLeak! ? 'true' : 'false'}';
   }
 }

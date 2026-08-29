@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_mjpeg/flutter_mjpeg.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-import 'package:boat_controller/boat_data.dart';
 import 'package:boat_controller/telemetry_data.dart';
 
 class ControlPage extends StatefulWidget {
@@ -18,7 +17,7 @@ class ControlPage extends StatefulWidget {
 
 class _ControlPageState extends State<ControlPage> {
   double _currentThrottle = 0; // -100 - 100 percent
-  double _currentTurn = 0; // -45 - 45 degrees
+  double _currentRudderAngle = 0; // 0 - 180 degrees
   WebSocketChannel? _wsChannel;
   TelemetryData? _latestTelemetry;
 
@@ -49,7 +48,7 @@ class _ControlPageState extends State<ControlPage> {
     );
   }
 
-  void sendMotorControl(int throttle, int rudderAngle) {
+  void sendBoatControl(int throttle, int rudderAngle) {
     if (_wsChannel != null) {
       // create map
       Map<String, dynamic> payload = {
@@ -88,7 +87,7 @@ class _ControlPageState extends State<ControlPage> {
         child: Stack(
           children: [
             // on-board camera stream
-            Positioned.fill(
+            /*Positioned.fill(
               child: Mjpeg(
                 isLive: true,
                 error: (context, error, stack) {
@@ -99,7 +98,7 @@ class _ControlPageState extends State<ControlPage> {
                 },
                 stream: 'http://192.168.4.1/stream',
               ),
-            ),
+            ),*/
             Row(
               mainAxisAlignment: .center,
               children: [
@@ -131,6 +130,10 @@ class _ControlPageState extends State<ControlPage> {
                                 _currentThrottle = value;
                               });
                             },
+                            onChangeEnd: (value) => sendBoatControl(
+                              _currentThrottle.round(),
+                              _currentRudderAngle.round(),
+                            ),
                           ),
                         ),
                       ),
@@ -151,7 +154,7 @@ class _ControlPageState extends State<ControlPage> {
                   children: [
                     if (_latestTelemetry != null) ...[
                       Text(
-                        telemetryData.toString(),
+                        _latestTelemetry.toString(),
                         style: TextStyle(color: Colors.black),
                       ),
                     ],
@@ -168,7 +171,7 @@ class _ControlPageState extends State<ControlPage> {
                         width: screenWidth / 12,
                         child: Text(
                           textAlign: TextAlign.center,
-                          _currentTurn.toStringAsFixed(2),
+                          _currentRudderAngle.toStringAsFixed(2),
                           style: TextStyle(fontSize: 18),
                         ),
                       ),
@@ -179,18 +182,22 @@ class _ControlPageState extends State<ControlPage> {
                             // turn slider
                             // ignore: deprecated_member_use
                             year2023: false,
-                            value: _currentTurn,
-                            max: 45,
-                            min: -45,
+                            value: _currentRudderAngle,
+                            max: 180,
+                            min: 0,
                             onChanged: (double value) {
                               setState(() {
-                                _currentTurn = value;
+                                _currentRudderAngle = value;
                               });
                             },
                             onChangeEnd: (value) {
+                              sendBoatControl(
+                                _currentThrottle.round(),
+                                _currentRudderAngle.round(),
+                              );
                               // snap to zero when tap ended
                               setState(() {
-                                _currentTurn = 0;
+                                _currentRudderAngle = 90;
                               });
                             },
                           ),
@@ -200,7 +207,7 @@ class _ControlPageState extends State<ControlPage> {
                       IconButton(
                         onPressed: () {
                           setState(() {
-                            _currentTurn = 0;
+                            _currentRudderAngle = 0;
                           });
                         },
                         icon: Icon(Icons.replay),

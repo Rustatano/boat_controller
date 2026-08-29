@@ -43,9 +43,10 @@ void sendControlPacket(int8_t throttle, uint8_t rudder_angle) {
     ControlPacket packet;
     packet.throttle = throttle;
     packet.rudder_angle = rudder_angle;
-    packet.checksum = packet.header ^ packet.throttle ^ packet.rudder_angle;
+    packet.checksum = packet.header ^ (uint8_t)packet.throttle ^ packet.rudder_angle;
 
     Uart1.write((uint8_t*)&packet, sizeof(packet));
+    Serial.println("sent something");
 }
 
 // send data over Wi-Fi to controller
@@ -76,19 +77,23 @@ void sendTelemetryData(int8_t speed, int8_t temperature, uint8_t water_leak) {
 // websocket handler
 esp_err_t ws_handler(httpd_req_t *req) {
     // handshake
+    Serial.println("handshake");
     if (req->method == HTTP_GET) {
+        last_client_fd = httpd_req_to_sockfd(req);
         return ESP_OK;
     }
     
     httpd_ws_frame_t ws_packet;
     memset(&ws_packet, 0, sizeof(httpd_ws_frame_t));
     
+    Serial.println("len data");
     // get length of incoming frame
     esp_err_t ret = httpd_ws_recv_frame(req, &ws_packet, 0);
     if (ret != ESP_OK || ws_packet.len == 0) {
         return ret;
     }
 
+    Serial.println("alloc data");
     // allocate space for text data + '\n'
     char *buf = (char*) malloc(ws_packet.len + 1);
     if (buf == NULL) {
@@ -99,8 +104,9 @@ esp_err_t ws_handler(httpd_req_t *req) {
     
     // load data from frame
     ret = httpd_ws_recv_frame(req, &ws_packet, ws_packet.len);
+    Serial.println("load data");
     if (ret == ESP_OK) {
-        // strin ending
+        // string ending
         buf[ws_packet.len] = '\0';
 
         // deserialize into json
@@ -257,20 +263,20 @@ void setup() {
 
 void loop() {
     // read data from uart communication
-    while (Serial.available() >= sizeof(TelemetryPacket)) {
+    while (Uart1.available() >= sizeof(TelemetryPacket)) {
         // check for correct header
-        if (Serial.peek() == 0xBB) {
+        if (Uart1.peek() == 0xBB) {
             TelemetryPacket packet;
-            Serial.readBytes((uint8_t*)&packet, sizeof(packet));
+            Uart1.readBytes((uint8_t*)&packet, sizeof(packet));
 
             // compare checksums
-            if (packet.header ^ packet.speed ^ packet.temperature ^ packet.water_leak == packet.checksum) {
+            if ((packet.header ^ packet.speed ^ packet.temperature ^ packet.water_leak) == packet.checksum) {
                 // correct data => able to send it to controller
                 sendTelemetryData(packet.speed, packet.temperature, packet.water_leak);
             }
         } else {
             // incorrect data => try to move by one byte for synchronization
-            Serial.read();
+            Uart1.read();
         }
     }
 }
