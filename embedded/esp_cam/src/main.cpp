@@ -1,7 +1,6 @@
-// made by Gemini Flash, edited
-
 #include <HardwareSerial.h>
 #include <WiFi.h>
+#include <ArduinoJson.h>
 
 #include "../../lib/packet.h"
 #include "esp_camera.h"
@@ -33,10 +32,13 @@ const char* ssid = "BoatControlller";
 const char* password = "NoExplosionPlease";
 
 httpd_handle_t stream_httpd = NULL;
+httpd_handle_t server_handle = NULL;
+int last_client_fd = -1;
 
 // UART 1, UART 0 is for serial monitor
 HardwareSerial Uart1(1);
 
+// send data over uart communication
 void sendControlPacket(int8_t throttle, uint8_t rudder_angle) {
     ControlPacket packet;
     packet.throttle = throttle;
@@ -44,6 +46,79 @@ void sendControlPacket(int8_t throttle, uint8_t rudder_angle) {
     packet.checksum = packet.header ^ packet.throttle ^ packet.rudder_angle;
 
     Uart1.write((uint8_t*)&packet, sizeof(packet));
+}
+
+// send data over Wi-Fi to controller
+void sendTelemetryData(int8_t speed, int8_t temperature, uint8_t water_leak) {
+    if (server_handle == NULL || last_client_fd < 0) return;
+
+    // json preparaion
+    JsonDocument doc;
+    doc["speed"] = speed;
+    doc["temp"] = temperature;
+    doc["leak"] = water_leak;
+
+    // serialize json
+    String jsonString;
+    serializeJson(doc, jsonString);
+
+    // ws frame preparation
+    httpd_ws_frame_t ws_packet;
+    memset(&ws_packet, 0, sizeof(httpd_ws_frame_t));
+    ws_packet.payload = (uint8_t*)jsonString.c_str();
+    ws_packet.len = jsonString.length();
+    ws_packet.type = HTTPD_WS_TYPE_TEXT;
+
+    // async send to controller
+    httpd_ws_send_frame_async(server_handle, last_client_fd, &ws_packet);
+}
+
+// websocket handler
+esp_err_t ws_handler(httpd_req_t *req) {
+    // handshake
+    if (req->method == HTTP_GET) {
+        return ESP_OK;
+    }
+    
+    httpd_ws_frame_t ws_packet;
+    memset(&ws_packet, 0, sizeof(httpd_ws_frame_t));
+    
+    // get length of incoming frame
+    esp_err_t ret = httpd_ws_recv_frame(req, &ws_packet, 0);
+    if (ret != ESP_OK || ws_packet.len == 0) {
+        return ret;
+    }
+
+    // allocate space for text data + '\n'
+    char *buf = (char*) malloc(ws_packet.len + 1);
+    if (buf == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    ws_packet.payload = (uint8_t*) buf;
+    
+    // load data from frame
+    ret = httpd_ws_recv_frame(req, &ws_packet, ws_packet.len);
+    if (ret == ESP_OK) {
+        // strin ending
+        buf[ws_packet.len] = '\0';
+
+        // deserialize into json
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, buf);
+
+        if (!error) {
+            int8_t throttle = doc["throttle"];
+            uint8_t rudder_angle = doc["rudder_angle"];
+
+            // send control data over uart
+            sendControlPacket(throttle, rudder_angle);
+        }
+    }
+
+    free(buf);
+
+    return ret;
 }
 
 // mjpeg stream handler
@@ -99,44 +174,6 @@ esp_err_t stream_handler(httpd_req_t* req) {
     return res;
 }
 
-// clean raw html stream-only page
-static const char PROGMEM INDEX_HTML[] = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Kamerový Stream</title>
-  <style>
-    body { 
-      margin: 0; 
-      padding: 0; 
-      background-color: #000; 
-      display: flex; 
-      justify-content: center; 
-      align-items: center; 
-      height: 100vh; 
-      overflow: hidden;
-    }
-    img { 
-      max-width: 100%; 
-      max-height: 100%; 
-      object-fit: contain; 
-    }
-  </style>
-</head>
-<body>
-  <img src="/stream" id="stream">
-</body>
-</html>
-)rawliteral";
-
-// http page index handler
-esp_err_t index_handler(httpd_req_t* req) {
-    httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, INDEX_HTML, strlen(INDEX_HTML));
-}
-
 // http server init
 void startCameraServer() {
     // http server config and port
@@ -144,12 +181,12 @@ void startCameraServer() {
     config.server_port = 80;
 
     // page path handlers
-    httpd_uri_t index_uri = {.uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL};
     httpd_uri_t stream_uri = {.uri = "/stream", .method = HTTP_GET, .handler = stream_handler, .user_ctx = NULL};
+    httpd_uri_t ws_uri = {.uri = "/ws", .method = HTTP_GET, .handler = ws_handler, .user_ctx = NULL, .is_websocket = true};
 
     if (httpd_start(&stream_httpd, &config) == ESP_OK) {
-        httpd_register_uri_handler(stream_httpd, &index_uri);
         httpd_register_uri_handler(stream_httpd, &stream_uri);
+        httpd_register_uri_handler(stream_httpd, &ws_uri);
         Serial.println("LOG: HTTP server started");
     }
 }
@@ -179,15 +216,18 @@ void setup() {
     config.pin_pwdn = PWDN_GPIO;
     config.pin_reset = RESET_GPIO;
 
-    config.xclk_freq_hz = 10000000;  // 10 MHz for stability
+    // 10 MHz for stability
+    config.xclk_freq_hz = 10000000;
     config.pixel_format = PIXFORMAT_JPEG;
 
     if (psramFound()) {
-        config.frame_size = FRAMESIZE_VGA;  // 640x480
+        // 640x480
+        config.frame_size = FRAMESIZE_VGA;
         config.jpeg_quality = 12;
         config.fb_count = 2;
     } else {
-        config.frame_size = FRAMESIZE_QVGA;  // 320x240
+        // 320x240
+        config.frame_size = FRAMESIZE_QVGA;
         config.jpeg_quality = 12;
         config.fb_count = 1;
     }
@@ -215,28 +255,22 @@ void setup() {
     Serial.println(WiFi.softAPIP());
 }
 
-void sendTelemetryData(TelemetryPacket* packet) {
-
-}
-
-void readSerialData() {
-  while (Serial.available() >= sizeof(TelemetryPacket)) {
-    // check for correct header
-    if (Serial.peek() == 0xBB) {
-      TelemetryPacket packet;
-      Serial.readBytes((uint8_t*)&packet, sizeof(packet));
-
-      // compare checksums
-      if (packet.header ^ packet.speed ^ packet.temperature ^ packet.water_leak == packet.checksum) {
-        // correct data => able to send it to controller
-        sendTelemetryData(&packet);
-      }
-    } else {
-      // incorrect data => try to move by one byte for synchronization
-      Serial.read();
-    }
-  }
-}
-
 void loop() {
+    // read data from uart communication
+    while (Serial.available() >= sizeof(TelemetryPacket)) {
+        // check for correct header
+        if (Serial.peek() == 0xBB) {
+            TelemetryPacket packet;
+            Serial.readBytes((uint8_t*)&packet, sizeof(packet));
+
+            // compare checksums
+            if (packet.header ^ packet.speed ^ packet.temperature ^ packet.water_leak == packet.checksum) {
+                // correct data => able to send it to controller
+                sendTelemetryData(packet.speed, packet.temperature, packet.water_leak);
+            }
+        } else {
+            // incorrect data => try to move by one byte for synchronization
+            Serial.read();
+        }
+    }
 }
