@@ -1,28 +1,32 @@
 // made by Gemini Flash, edited
 
+#include <HardwareSerial.h>
 #include <WiFi.h>
 
+#include "../../lib/packet.h"
 #include "esp_camera.h"
 #include "esp_http_server.h"
 
 // pinout
-#define PWDN_GPIO_NUM 32
-#define RESET_GPIO_NUM -1
-#define XCLK_GPIO_NUM 0
-#define SIOD_GPIO_NUM 26
-#define SIOC_GPIO_NUM 27
+#define TX_GPIO 12
+#define RX_GPIO 13
 
-#define Y9_GPIO_NUM 35
-#define Y8_GPIO_NUM 34
-#define Y7_GPIO_NUM 39
-#define Y6_GPIO_NUM 36
-#define Y5_GPIO_NUM 21
-#define Y4_GPIO_NUM 19
-#define Y3_GPIO_NUM 18
-#define Y2_GPIO_NUM 5
-#define VSYNC_GPIO_NUM 25
-#define HREF_GPIO_NUM 23
-#define PCLK_GPIO_NUM 22
+#define PWDN_GPIO 32
+#define RESET_GPIO -1
+#define XCLK_GPIO 0
+#define SIOD_GPIO 26
+#define SIOC_GPIO 27
+#define Y9_GPIO 35
+#define Y8_GPIO 34
+#define Y7_GPIO 39
+#define Y6_GPIO 36
+#define Y5_GPIO 21
+#define Y4_GPIO 19
+#define Y3_GPIO 18
+#define Y2_GPIO 5
+#define VSYNC_GPIO 25
+#define HREF_GPIO 23
+#define PCLK_GPIO 22
 
 // Wi-Fi credentials
 const char* ssid = "BoatControlller";
@@ -30,9 +34,21 @@ const char* password = "NoExplosionPlease";
 
 httpd_handle_t stream_httpd = NULL;
 
+// UART 1, UART 0 is for serial monitor
+HardwareSerial Uart1(1);
+
+void sendControlPacket(int8_t throttle, uint8_t rudder_angle) {
+    ControlPacket packet;
+    packet.throttle = throttle;
+    packet.rudder_angle = rudder_angle;
+    packet.checksum = packet.header ^ packet.throttle ^ packet.rudder_angle;
+
+    Uart1.write((uint8_t*)&packet, sizeof(packet));
+}
+
 // mjpeg stream handler
 esp_err_t stream_handler(httpd_req_t* req) {
-    camera_fb_t* fb = NULL;
+    camera_fb_t* frame_buf = NULL;
     char part_buf[128];
     // image boundary separator
     esp_err_t res = httpd_resp_set_type(req, "multipart/x-mixed-replace; boundary=123456789000000000000987654321");
@@ -48,8 +64,8 @@ esp_err_t stream_handler(httpd_req_t* req) {
 
     while (true) {
         // get frame buffer
-        fb = esp_camera_fb_get();
-        if (!fb) {
+        frame_buf = esp_camera_fb_get();
+        if (!frame_buf) {
             Serial.println("ERR: Failed to capture a frame");
             res = ESP_FAIL;
             break;
@@ -58,19 +74,19 @@ esp_err_t stream_handler(httpd_req_t* req) {
         // text image-descriptor preparation
         size_t hlen = snprintf(part_buf, 128,
                                "\r\n--123456789000000000000987654321\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n",
-                               fb->len);
+                               frame_buf->len);
 
         // send image text-description
         res = httpd_resp_send_chunk(req, part_buf, hlen);
 
         // send image data
         if (res == ESP_OK) {
-            res = httpd_resp_send_chunk(req, (const char*)fb->buf, fb->len);
+            res = httpd_resp_send_chunk(req, (const char*)frame_buf->buf, frame_buf->len);
         }
 
         // free frame buffer for next frame
-        esp_camera_fb_return(fb);
-        fb = NULL;
+        esp_camera_fb_return(frame_buf);
+        frame_buf = NULL;
 
         if (res != ESP_OK) {
             break;
@@ -140,27 +156,28 @@ void startCameraServer() {
 
 void setup() {
     Serial.begin(115200);
+    Uart1.begin(115200, SERIAL_8N1, RX_GPIO, TX_GPIO);
 
     // pin assignment
     camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
-    config.pin_d0 = Y2_GPIO_NUM;
-    config.pin_d1 = Y3_GPIO_NUM;
-    config.pin_d2 = Y4_GPIO_NUM;
-    config.pin_d3 = Y5_GPIO_NUM;
-    config.pin_d4 = Y6_GPIO_NUM;
-    config.pin_d5 = Y7_GPIO_NUM;
-    config.pin_d6 = Y8_GPIO_NUM;
-    config.pin_d7 = Y9_GPIO_NUM;
-    config.pin_xclk = XCLK_GPIO_NUM;
-    config.pin_pclk = PCLK_GPIO_NUM;
-    config.pin_vsync = VSYNC_GPIO_NUM;
-    config.pin_href = HREF_GPIO_NUM;
-    config.pin_sccb_sda = SIOD_GPIO_NUM;
-    config.pin_sccb_scl = SIOC_GPIO_NUM;
-    config.pin_pwdn = PWDN_GPIO_NUM;
-    config.pin_reset = RESET_GPIO_NUM;
+    config.pin_d0 = Y2_GPIO;
+    config.pin_d1 = Y3_GPIO;
+    config.pin_d2 = Y4_GPIO;
+    config.pin_d3 = Y5_GPIO;
+    config.pin_d4 = Y6_GPIO;
+    config.pin_d5 = Y7_GPIO;
+    config.pin_d6 = Y8_GPIO;
+    config.pin_d7 = Y9_GPIO;
+    config.pin_xclk = XCLK_GPIO;
+    config.pin_pclk = PCLK_GPIO;
+    config.pin_vsync = VSYNC_GPIO;
+    config.pin_href = HREF_GPIO;
+    config.pin_sccb_sda = SIOD_GPIO;
+    config.pin_sccb_scl = SIOC_GPIO;
+    config.pin_pwdn = PWDN_GPIO;
+    config.pin_reset = RESET_GPIO;
 
     config.xclk_freq_hz = 10000000;  // 10 MHz for stability
     config.pixel_format = PIXFORMAT_JPEG;
@@ -178,19 +195,19 @@ void setup() {
     // initializing camera
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) {
-        Serial.printf("ERR: camera rrror: 0x%x\n", err);
+        Serial.printf("ERR: camera error: 0x%x\n", err);
         return;
     }
 
     // first frame cleaning
-    camera_fb_t* fb = esp_camera_fb_get();
-    if (fb) {
-        esp_camera_fb_return(fb);
+    camera_fb_t* frame_buf = esp_camera_fb_get();
+    if (frame_buf) {
+        esp_camera_fb_return(frame_buf);
     }
 
-    // initioalizing Wi-Fi
+    // initializing Wi-Fi
     WiFi.softAP(ssid, password);
-    
+
     // initializing http server
     startCameraServer();
 
@@ -198,6 +215,28 @@ void setup() {
     Serial.println(WiFi.softAPIP());
 }
 
+void sendTelemetryData(TelemetryPacket* packet) {
+
+}
+
+void readSerialData() {
+  while (Serial.available() >= sizeof(TelemetryPacket)) {
+    // check for correct header
+    if (Serial.peek() == 0xBB) {
+      TelemetryPacket packet;
+      Serial.readBytes((uint8_t*)&packet, sizeof(packet));
+
+      // compare checksums
+      if (packet.header ^ packet.speed ^ packet.temperature ^ packet.water_leak == packet.checksum) {
+        // correct data => able to send it to controller
+        sendTelemetryData(&packet);
+      }
+    } else {
+      // incorrect data => try to move by one byte for synchronization
+      Serial.read();
+    }
+  }
+}
+
 void loop() {
-    delay(10000);
 }

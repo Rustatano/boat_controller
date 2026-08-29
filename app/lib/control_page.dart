@@ -12,8 +12,8 @@ class ControlPage extends StatefulWidget {
 }
 
 class _ControlPageState extends State<ControlPage> {
-  double _currentThrottle = 0; // From 0 to 100 %
-  double _currentTurn = 0; // From -45 to 45 °
+  double _currentThrottle = 0; // from 0 to 100 %
+  double _currentTurn = 0; // grom -45 to 45 °
 
   SailParameters sailParameters = SailParameters(DateTime.now());
 
@@ -25,6 +25,7 @@ class _ControlPageState extends State<ControlPage> {
       body: Center(
         child: Stack(
           children: [
+            // on-board camera stream
             Positioned.fill(
               child: Mjpeg(
                 isLive: true,
@@ -40,7 +41,7 @@ class _ControlPageState extends State<ControlPage> {
             Row(
               mainAxisAlignment: .center,
               children: [
-                // Throttle slider column
+                // throttle slider column
                 Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
@@ -57,7 +58,7 @@ class _ControlPageState extends State<ControlPage> {
                         child: RotatedBox(
                           quarterTurns: 3,
                           child: Slider(
-                            // Throttle slider
+                            // throttle slider
                             // ignore: deprecated_member_use
                             year2023: false,
                             value: _currentThrottle,
@@ -70,7 +71,7 @@ class _ControlPageState extends State<ControlPage> {
                           ),
                         ),
                       ),
-                      // Reset throttle button
+                      // reset throttle button
                       IconButton(
                         onPressed: () {
                           setState(() {
@@ -82,7 +83,7 @@ class _ControlPageState extends State<ControlPage> {
                     ],
                   ),
                 ),
-                // Parameters display (sensors, time, ...)
+                // parameters display (sensors, time, ...)
                 Column(
                   children: [
                     Text(
@@ -91,9 +92,9 @@ class _ControlPageState extends State<ControlPage> {
                     ),
                   ],
                 ),
-                // Central view
+                // central view
                 Expanded(child: Container()),
-                // Turn slider column
+                // turn slider column
                 Padding(
                   padding: const EdgeInsets.all(10.0),
                   child: Column(
@@ -110,7 +111,7 @@ class _ControlPageState extends State<ControlPage> {
                         child: RotatedBox(
                           quarterTurns: 3,
                           child: Slider(
-                            // Turn slider
+                            // turn slider
                             // ignore: deprecated_member_use
                             year2023: false,
                             value: _currentTurn,
@@ -122,7 +123,7 @@ class _ControlPageState extends State<ControlPage> {
                               });
                             },
                             onChangeEnd: (value) {
-                              // Snap to zero when tap ended
+                              // snap to zero when tap ended
                               setState(() {
                                 _currentTurn = 0;
                               });
@@ -130,7 +131,7 @@ class _ControlPageState extends State<ControlPage> {
                           ),
                         ),
                       ),
-                      // Reset turn button
+                      // reset turn button
                       IconButton(
                         onPressed: () {
                           setState(() {
