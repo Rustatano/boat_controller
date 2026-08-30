@@ -6,8 +6,8 @@
 #include "esp_camera.h"
 
 // pinout
-#define TX_GPIO 12
-#define RX_GPIO 13
+#define TX_GPIO 14
+#define RX_GPIO 15
 
 #define PWDN_GPIO 32
 #define RESET_GPIO -1
@@ -38,12 +38,13 @@ HardwareSerial Uart1(1);
 
 // send control data over uart to control esp
 void sendControlPacket(int8_t throttle, uint8_t rudder_angle) {
-    ControlPacket packet;
+    ControlPacket packet{};
     packet.throttle = throttle;
     packet.rudder_angle = rudder_angle;
     packet.checksum = packet.header ^ (uint8_t)packet.throttle ^ packet.rudder_angle;
 
     Uart1.write((uint8_t*)&packet, sizeof(packet));
+    Uart1.flush();
     Serial.println("sent something over UART");
 }
 
@@ -82,8 +83,11 @@ void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventTyp
             DeserializationError error = deserializeJson(doc, (char*)data);
 
             if (!error) {
-                int8_t throttle = doc["throttle"];
-                uint8_t rudder_angle = doc["rudder_angle"];
+                int t = doc["throttle"] | 0;
+                int r = doc["rudder_angle"] | 90;
+
+                int8_t throttle = (int8_t)constrain(t, -100, 100);
+                uint8_t rudder_angle = (uint8_t)constrain(r, 0, 180);
 
                 sendControlPacket(throttle, rudder_angle);
             }
@@ -92,53 +96,51 @@ void onWsEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventTyp
 }
 
 // video stream handler
-void handleMjpegStream(AsyncWebServerRequest *request) {
-    AsyncWebServerResponse *response = request->beginResponse("multipart/x-mixed-replace; boundary=frame", 0, 
-        [](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
-            static camera_fb_t * fb = NULL;
-            static size_t frameIndex = 0;
+void handleMjpegStream(AsyncWebServerRequest* request) {
+    AsyncWebServerResponse* response = request->beginResponse("multipart/x-mixed-replace; boundary=frame", 0,
+                                                              [](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
+                                                                  static camera_fb_t* fb = NULL;
+                                                                  static size_t frameIndex = 0;
 
-            if (!fb) {
-                fb = esp_camera_fb_get();
-                if (!fb) {
-                    return 0;
-                }
-                frameIndex = 0;
-            }
+                                                                  if (!fb) {
+                                                                      fb = esp_camera_fb_get();
+                                                                      if (!fb) {
+                                                                          return 0;
+                                                                      }
+                                                                      frameIndex = 0;
+                                                                  }
 
-            char header[128];
-            int hlen = snprintf(header, sizeof(header), "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", fb->len);
-            size_t totalFrameLen = hlen + fb->len + 2;
+                                                                  char header[128];
+                                                                  int hlen = snprintf(header, sizeof(header), "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", fb->len);
+                                                                  size_t totalFrameLen = hlen + fb->len + 2;
 
-            size_t bytesWritten = 0;
+                                                                  size_t bytesWritten = 0;
 
-            while (bytesWritten < maxLen && frameIndex < totalFrameLen) {
-                if (frameIndex < (size_t)hlen) {
-                    // send HTTP header
-                    buffer[bytesWritten++] = header[frameIndex++];
-                } 
-                else if (frameIndex < hlen + fb->len) {
-                    // send jpeg image data
-                    buffer[bytesWritten++] = fb->buf[frameIndex - hlen];
-                    frameIndex++;
-                } 
-                else {
-                    // send ending \r\n
-                    buffer[bytesWritten++] = (frameIndex == hlen + fb->len) ? '\r' : '\n';
-                    frameIndex++;
-                }
-            }
+                                                                  while (bytesWritten < maxLen && frameIndex < totalFrameLen) {
+                                                                      if (frameIndex < (size_t)hlen) {
+                                                                          // send HTTP header
+                                                                          buffer[bytesWritten++] = header[frameIndex++];
+                                                                      } else if (frameIndex < hlen + fb->len) {
+                                                                          // send jpeg image data
+                                                                          buffer[bytesWritten++] = fb->buf[frameIndex - hlen];
+                                                                          frameIndex++;
+                                                                      } else {
+                                                                          // send ending \r\n
+                                                                          buffer[bytesWritten++] = (frameIndex == hlen + fb->len) ? '\r' : '\n';
+                                                                          frameIndex++;
+                                                                      }
+                                                                  }
 
-            // Pokud jsme poslali celý snímek, uvolníme ho a připravíme se na další
-            if (frameIndex >= totalFrameLen) {
-                esp_camera_fb_return(fb);
-                fb = NULL;
-                frameIndex = 0;
-            }
+                                                                  if (frameIndex >= totalFrameLen) {
+                                                                      // sent all of frame, free space and capture another
+                                                                      esp_camera_fb_return(fb);
+                                                                      fb = NULL;
+                                                                      frameIndex = 0;
+                                                                      vTaskDelay(30 / portTICK_PERIOD_MS);
+                                                                  }
 
-            return bytesWritten;
-        }
-    );
+                                                                  return bytesWritten;
+                                                              });
 
     response->addHeader("Access-Control-Allow-Origin", "*");
     response->addHeader("Cache-Control", "no-cache, private");
@@ -175,11 +177,11 @@ void setup() {
 
     if (psramFound()) {
         config.frame_size = FRAMESIZE_VGA;
-        config.jpeg_quality = 12;
+        config.jpeg_quality = 15;
         config.fb_count = 2;
     } else {
         config.frame_size = FRAMESIZE_QVGA;
-        config.jpeg_quality = 12;
+        config.jpeg_quality = 15;
         config.fb_count = 1;
     }
 

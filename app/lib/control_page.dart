@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_mjpeg/flutter_mjpeg.dart';
@@ -20,12 +21,35 @@ class _ControlPageState extends State<ControlPage> {
   double _currentRudderAngle = 90; // 0 - 180 degrees
   WebSocketChannel? _wsChannel;
   TelemetryData? _latestTelemetry;
+  Timer? _throttleTimer;
+  bool _canSend = true;
+  final Duration _sendInterval = Duration(milliseconds: 50);
 
   TelemetryData telemetryData = TelemetryData(
     speed: 0,
     temperature: 0,
     waterLeak: false,
   );
+
+  void sendBoatControlThrottled(int throttle, int rudderAngle) {
+    // Pokud ještě neuplynul interval od posledního odeslání, ignorujeme mezipolohy
+    if (!_canSend) return;
+
+    // Odeslání dat přes WebSocket
+    sendBoatControl(throttle, rudderAngle);
+
+    // Uzamčení odesílání na časový interval
+    _canSend = false;
+    _throttleTimer = Timer(_sendInterval, () {
+      _canSend = true;
+    });
+  }
+
+  @override
+  void dispose() {
+    _throttleTimer?.cancel();
+    super.dispose();
+  }
 
   void connect(Function(TelemetryData) onTelemetryReceived) {
     _wsChannel = WebSocketChannel.connect(Uri.parse('ws://192.168.4.1/ws'));
@@ -119,9 +143,6 @@ class _ControlPageState extends State<ControlPage> {
                         child: RotatedBox(
                           quarterTurns: 3,
                           child: Slider(
-                            // throttle slider
-                            // ignore: deprecated_member_use
-                            year2023: false,
                             value: _currentThrottle,
                             max: 100,
                             min: -100,
@@ -129,8 +150,16 @@ class _ControlPageState extends State<ControlPage> {
                               setState(() {
                                 _currentThrottle = value;
                               });
-                              sendBoatControl(
+                              // Omezené odesílání během plynulého tažení
+                              sendBoatControlThrottled(
                                 _currentThrottle.round(),
+                                _currentRudderAngle.round(),
+                              );
+                            },
+                            onChangeEnd: (double value) {
+                              // Okamžité odeslání finální polohy po puštění slideru
+                              sendBoatControl(
+                                value.round(),
                                 _currentRudderAngle.round(),
                               );
                             },
@@ -143,6 +172,10 @@ class _ControlPageState extends State<ControlPage> {
                           setState(() {
                             _currentThrottle = 0;
                           });
+                          sendBoatControl(
+                            _currentThrottle.round(),
+                            _currentRudderAngle.round(),
+                          );
                         },
                         icon: Icon(Icons.replay),
                       ),
@@ -179,9 +212,6 @@ class _ControlPageState extends State<ControlPage> {
                         child: RotatedBox(
                           quarterTurns: 3,
                           child: Slider(
-                            // turn slider
-                            // ignore: deprecated_member_use
-                            year2023: false,
                             value: _currentRudderAngle,
                             max: 180,
                             min: 0,
@@ -189,9 +219,17 @@ class _ControlPageState extends State<ControlPage> {
                               setState(() {
                                 _currentRudderAngle = value;
                               });
-                              sendBoatControl(
+                              // Omezené odesílání během plynulého tažení
+                              sendBoatControlThrottled(
                                 _currentThrottle.round(),
                                 _currentRudderAngle.round(),
+                              );
+                            },
+                            onChangeEnd: (double value) {
+                              // Okamžité odeslání finální polohy po puštění slideru
+                              sendBoatControl(
+                                _currentThrottle.round(),
+                                value.round(),
                               );
                             },
                           ),
@@ -202,6 +240,10 @@ class _ControlPageState extends State<ControlPage> {
                         onPressed: () {
                           setState(() {
                             _currentRudderAngle = 90;
+                            sendBoatControl(
+                              _currentThrottle.round(),
+                              _currentRudderAngle.round(),
+                            );
                           });
                         },
                         icon: Icon(Icons.replay),
