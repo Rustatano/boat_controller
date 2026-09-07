@@ -16,8 +16,6 @@
 HardwareSerial Uart1(1);
 Servo rudderServo;
 
-int8_t previous_throttle = 0;
-
 // write PWM signal to servo
 void setRudderAngle(uint8_t angle) {
     rudderServo.write(angle);
@@ -29,27 +27,11 @@ void setThrottle(int8_t throttle) {
     if (abs(throttle) < 10) {
         analogWrite(MOTOR_FORWARD_GPIO, 0);
         analogWrite(MOTOR_BACKWARD_GPIO, 0);
-        previous_throttle = 0;
         return;
     }
 
     // convert -100 - 100 values to 0 - 255 pwm values
-    uint8_t pwm_throttle = map(abs(throttle), 0, 100, 0, 255);
-
-    // kickstarter do make the motor run
-    if (previous_throttle == 0) {
-        // short 100 % throttles, pwm 255
-        if (throttle > 0) {
-            analogWrite(MOTOR_FORWARD_GPIO, 255);
-            analogWrite(MOTOR_BACKWARD_GPIO, 0);
-        } else {
-            analogWrite(MOTOR_FORWARD_GPIO, 0);
-            analogWrite(MOTOR_BACKWARD_GPIO, 255);
-        }
-
-        // kickstart impulse delay
-        delay(60);
-    }
+    uint8_t pwm_throttle = map(abs(throttle), 10, 100, 180, 255);
 
     if (throttle >= 0) {
         analogWrite(MOTOR_FORWARD_GPIO, pwm_throttle);
@@ -58,8 +40,6 @@ void setThrottle(int8_t throttle) {
         analogWrite(MOTOR_FORWARD_GPIO, 0);
         analogWrite(MOTOR_BACKWARD_GPIO, pwm_throttle);
     }
-
-    previous_throttle = throttle;
 }
 
 void setup() {
