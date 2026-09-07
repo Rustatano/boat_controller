@@ -58,6 +58,8 @@ void setThrottle(int8_t throttle) {
         analogWrite(MOTOR_FORWARD_GPIO, 0);
         analogWrite(MOTOR_BACKWARD_GPIO, pwm_throttle);
     }
+
+    previous_throttle = throttle;
 }
 
 void setup() {
