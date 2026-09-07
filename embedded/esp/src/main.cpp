@@ -16,7 +16,7 @@
 HardwareSerial Uart1(1);
 Servo rudderServo;
 
-unsigned long last_packet_time = 0;
+int8_t previous_throttle = 0;
 
 // write PWM signal to servo
 void setRudderAngle(uint8_t angle) {
@@ -25,8 +25,31 @@ void setRudderAngle(uint8_t angle) {
 
 // write PWM signal and direction to motor
 void setThrottle(int8_t throttle) {
+    // dead zone around 0% throttle, -10 - 10 %
+    if (abs(throttle) < 10) {
+        analogWrite(MOTOR_FORWARD_GPIO, 0);
+        analogWrite(MOTOR_BACKWARD_GPIO, 0);
+        previous_throttle = 0;
+        return;
+    }
+
     // convert -100 - 100 values to 0 - 255 pwm values
     uint8_t pwm_throttle = map(abs(throttle), 0, 100, 0, 255);
+
+    // kickstarter do make the motor run
+    if (previous_throttle == 0) {
+        // short 100 % throttles, pwm 255
+        if (throttle > 0) {
+            analogWrite(MOTOR_FORWARD_GPIO, 255);
+            analogWrite(MOTOR_BACKWARD_GPIO, 0);
+        } else {
+            analogWrite(MOTOR_FORWARD_GPIO, 0);
+            analogWrite(MOTOR_BACKWARD_GPIO, 255);
+        }
+
+        // kickstart impulse delay
+        delay(60);
+    }
 
     if (throttle >= 0) {
         analogWrite(MOTOR_FORWARD_GPIO, pwm_throttle);
@@ -39,7 +62,6 @@ void setThrottle(int8_t throttle) {
 
 void setup() {
     Uart1.begin(115200, SERIAL_8N1, RX_GPIO, TX_GPIO);
-    // Serial.begin(115200);
 
     pinMode(MOTOR_FORWARD_GPIO, OUTPUT);
     pinMode(MOTOR_BACKWARD_GPIO, OUTPUT);
@@ -60,8 +82,6 @@ void setup() {
     // default speed for motor is 0
     analogWrite(MOTOR_FORWARD_GPIO, 0);
     analogWrite(MOTOR_BACKWARD_GPIO, 0);
-
-    last_packet_time = millis();
 }
 
 void loop() {
@@ -78,17 +98,10 @@ void loop() {
                 // correct data => able to apply values
                 setRudderAngle(packet.rudder_angle);
                 setThrottle(packet.throttle);
-                last_packet_time = millis();
             }
         } else {
             // incorrect data => try to move by one byte for synchronization
             Uart1.read();
         }
-    }
-
-    // timeout -> stop motion
-    if (millis() - last_packet_time > FAILSAFE_TIMEOUT_MS) {
-        setThrottle(0);
-        setRudderAngle(90);
     }
 }
